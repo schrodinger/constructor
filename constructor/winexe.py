@@ -93,7 +93,7 @@ def make_nsi(info, dir_path):
         'NAME': name,
         'VERSION': info['version'],
         'VIPV': make_VIProductVersion(info['version']),
-        'COMPANY': info.get('company', 'Unknown, Inc.'),
+        'COMPANY': info.get('company', 'Schrodinger, Inc.'),
         'ARCH': '%d-bit' % arch,
         'PY_VER': py_version[:3],
         'PYVERSION': py_version,
