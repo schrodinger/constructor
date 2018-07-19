@@ -1,4 +1,4 @@
-# (c) 2016 Continuum Analytics, Inc. / http://continuum.io
+# (c) 2016 Anaconda, Inc. / https://anaconda.com
 # All Rights Reserved
 #
 # constructor is distributed under the terms of the BSD 3-clause license.
@@ -9,29 +9,15 @@ from os.path import abspath, dirname
 import re
 import sys
 
-import yaml
+try:
+    import yaml
+except:
+    import ruamel_yaml as yaml
 
 from constructor.exceptions import (
     UnableToParse, UnableToParseMissingJinja2, YamlParsingError,
 )
 
-
-PREABLE = '''\n
-Keys in `construct.yaml` file:
-==============================
-
-This document describes each of they keys in the `construct.yaml` file,
-which is the main configuration file of a constructor configuration
-directory.
-
-All keys are optional, except otherwise noted.  Also, the keys `specs`
-and `packages` take either a list of items, or a path to a file,
-which contains one item per line (excluding lines starting with `#`).
-
-Also note, that any line in `construct.yaml` may contain a selector at the
-end, in order to allow customization for selected platforms.
-
-'''
 
 # list of tuples (key name, required, type, description)
 KEYS = [
@@ -52,10 +38,33 @@ key below, but also when using the `packages` key ,unless the full URL is
 given in the `packages` list (see below).
 '''),
 
+    ('channels_remap',         False, list, '''
+List of `(src, dest)` channels, from which, channels from `src` are also
+considered while running solver, but are replaced by corresponding values from
+dest when writing `urls{,.txt}`. Example use:
+```
+channels_remap:
+  -
+      src: file:///tmp/a3/conda-bld
+      dest: https://repo.anaconda.com/pkgs/main
+  -
+      src: file:///tmp/r/conda-bld
+      dest: https://repo.anaconda.com/pkgs/r
+```
+'''),
+
     ('specs',                  False, (list, str), '''
 List of package specifications, e.g. `python 2.7*`, `pyzmq` or `numpy >=1.8`.
 This list of specifications if given to the conda resolver (as if you were
-to create a new environment with those specs.
+to create a new environment with those specs). The packages may also be
+specified by their entire URL,
+e.g.`https://repo.anaconda.com/pkgs/main/osx-64/openssl-1.0.2o-h26aff7b_0.tar.bz2`.
+'''),
+
+    ('user_requested_specs',                  False, (list, str), '''
+List of package specifications to be recorded as "user-requested" for the 
+initial environment in conda's history file. If not given, user-requested
+specs will fall back to 'specs'. 
 '''),
 
     ('exclude',                False, list, '''
@@ -64,18 +73,15 @@ For example, you can say that `readline` should be excluded, even though it
 is contained as a result of resolving the specs for `python 2.7`.
 '''),
 
-    ('packages',               False, (list, str), '''
-A list of explicit conda packages to be included, e.g. `yaml-0.1.6-0.tar.bz2`.
-The packages may also be specified by their entire URL,
-e.g.`https://repo.continuum.io/pkgs/free/osx-64/openssl-1.0.1k-1.tar.bz2`.
-Optionally, the MD5 hash sum of the package, may be added after an immediate
-`#` character, e.g. `readline-6.2-2.tar.bz2#0801e644bd0c1cd7f0923b56c52eb7f7`.
-'''),
-
     ('menu_packages',           False, list, '''
 Packages for menu items will be installed (if the conda package contains the
 necessary metadata in "Menu/<package name>.json").  Menu items are currently
 only supported on Windows.  By default, all menu items will be installed.
+'''),
+
+    ('ignore_duplicate_files',  False, bool, '''
+By default, constructor will error out when adding packages with duplicate
+files in them. Enable this option to warn instead and continue.
 '''),
 
     ('install_in_dependency_order', False, bool, '''
@@ -109,6 +115,29 @@ process.
 By default, no conda packages are preserved after running the created
 installer in the `pkgs` directory.  Using this option changes the default
 behavior.
+'''),
+
+    ('signing_identity_name',  False, str, '''
+By default, the MacOS pkg installer isn't signed. If an identity name is specified
+using this option, it will be used to sign the installer. Note that you will need
+to have a certificate and corresponding private key together called an 'identity'
+in one of your accessible keychains.
+'''),
+
+    ('attempt_hardlinks',          False, bool, '''
+By default, conda packages are extracted into the root environment and then
+patched. Enabling this option will result into extraction of the packages into
+the `pkgs` directory and the files in the root environment will be hardlinks to
+the files kept in the `pkgs` directory and then patched accordingly.
+'''),
+
+    ('write_condarc',          False, bool, '''
+By default, no .condarc file is written. If set, a .condarc file is written to
+the base environment if there are any channels or conda_default_channels is set.
+'''),
+
+    ('company',                False, str, '''
+Name of the company/entity who is responsible for the installer.
 '''),
 
     ('pre_install',            False, str, '''
@@ -204,7 +233,7 @@ def select_lines(data, namespace):
 def yamlize(data, directory, content_filter):
     data = content_filter(data)
     try:
-        return yaml.load(data)
+        return yaml.safe_load(data)
     except yaml.error.YAMLError as e:
         if ('{{' not in data) and ('{%' not in data):
             raise UnableToParse(original=e)
@@ -271,22 +300,8 @@ def verify(info):
 
 
 def generate_doc():
-    path = abspath('%s/../../CONSTRUCT.md' % __file__)
-    print('generating: %s' % path)
-    with open(path, 'w') as fo:
-        fo.write(PREABLE)
-        for key, required, unused_types, descr in KEYS:
-            descr = descr.strip()
-            if descr == 'XXX':
-                continue
-            fo.write("""
-`%s`:%s
-----------------
-%s
-
-""" % (key,
-       ' required' if required else '',
-       descr))
+    print('generate_doc() is deprecated. Use scripts/make_docs.py instead')
+    sys.exit(1)
 
 
 if __name__ == '__main__':

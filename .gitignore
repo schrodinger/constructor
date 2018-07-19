@@ -1,4 +1,7 @@
 *~
+*.swp
 *.pyc
 *.egg-info
 .cache/
+_cenv/
+.coverage

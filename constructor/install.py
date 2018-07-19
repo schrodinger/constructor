@@ -1,4 +1,4 @@
-# (c) 2012-2016 Continuum Analytics, Inc. / http://continuum.io
+# (c) 2012-2016 Anaconda, Inc. / https://anaconda.com
 # All Rights Reserved
 #
 # conda is distributed under the terms of the BSD 3-clause license.
@@ -55,14 +55,20 @@ IDISTS = {}
 
 
 def _link(src, dst, linktype=LINK_HARD):
-    if on_win:
-        raise NotImplementedError
-
     if linktype == LINK_HARD:
-        os.link(src, dst)
+        if on_win:
+            from ctypes import windll, wintypes
+            CreateHardLink = windll.kernel32.CreateHardLinkW
+            CreateHardLink.restype = wintypes.BOOL
+            CreateHardLink.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                       wintypes.LPVOID]
+            if not CreateHardLink(dst, src, None):
+                raise OSError('win32 hard link failed')
+        else:
+            os.link(src, dst)
     elif linktype == LINK_COPY:
         # copy relative symlinks as symlinks
-        if islink(src) and not os.readlink(src).startswith('/'):
+        if islink(src) and not os.readlink(src).startswith(os.path.sep):
             os.symlink(os.readlink(src), dst)
         else:
             shutil.copy2(src, dst)
@@ -111,10 +117,11 @@ def read_has_prefix(path):
     try:
         for line in yield_lines(path):
             try:
-                placeholder, mode, f = [x.strip('"\'') for x in
-                                        shlex.split(line, posix=False)]
+                parts = [x.strip('"\'') for x in shlex.split(line, posix=False)]
+                # assumption: placeholder and mode will never have a space
+                placeholder, mode, f = parts[0], parts[1], ' '.join(parts[2:])
                 res[f] = (placeholder, mode)
-            except ValueError:
+            except (ValueError, IndexError):
                 res[line] = (prefix_placeholder, 'text')
     except IOError:
         pass
@@ -202,7 +209,10 @@ def update_prefix(path, new_prefix, placeholder, mode):
 
 
 def name_dist(dist):
-    return dist.rsplit('-', 2)[0]
+    if hasattr(dist, 'name'):
+        return dist.name
+    else:
+        return dist.rsplit('-', 2)[0]
 
 
 def create_meta(prefix, dist, info_dir, extra_info):
@@ -218,8 +228,6 @@ def create_meta(prefix, dist, info_dir, extra_info):
     meta_dir = join(prefix, 'conda-meta')
     if not isdir(meta_dir):
         os.makedirs(meta_dir)
-        with open(join(meta_dir, 'history'), 'w') as fo:
-            fo.write('')
     with open(join(meta_dir, dist + '.json'), 'w') as fo:
         json.dump(meta, fo, indent=2, sort_keys=True)
 
@@ -316,6 +324,7 @@ def link(prefix, dist, linktype=LINK_HARD, info_dir=None):
         info_dir = info_dir or join(prefix, 'info')
 
     files = list(yield_lines(join(info_dir, 'files')))
+    # TODO: Use paths.json, if available or fall back to this method
     has_prefix_files = read_has_prefix(join(info_dir, 'has_prefix'))
 
     if linktype:
@@ -403,7 +412,7 @@ def yield_idists():
 
 
 def remove_duplicates():
-    idists = list(yield_idists)
+    idists = list(yield_idists())
     keep_files = set()
     for dist in idists:
         with open(join(ROOT_PREFIX, 'conda-meta', dist + '.json')) as fi:
@@ -421,8 +430,48 @@ def remove_duplicates():
         rm_rf(meta_path)
 
 
+def determine_link_type_capability():
+    src = join(PKGS_DIR, 'urls')
+    dst = join(ROOT_PREFIX, '.hard-link')
+    assert isfile(src), src
+    assert not isfile(dst), dst
+    try:
+        _link(src, dst, LINK_HARD)
+        linktype = LINK_HARD
+    except OSError:
+        linktype = LINK_COPY
+    finally:
+        rm_rf(dst)
+    return linktype
+
+
+def link_dist(dist, linktype=None):
+    if not linktype:
+        linktype = determine_link_type_capability()
+    prefix = prefix_env('root')
+    link(prefix, dist, linktype)
+
+
 def link_idists():
-    raise NotImplementedError
+    linktype = determine_link_type_capability()
+    for env_name in sorted(C_ENVS):
+        dists = C_ENVS[env_name]
+        assert isinstance(dists, list)
+        if len(dists) == 0:
+            continue
+
+        prefix = prefix_env(env_name)
+        for dist in dists:
+            assert dist in IDISTS
+            link_dist(dist, linktype)
+
+        for dist in duplicates_to_remove(linked(prefix), dists):
+            meta_path = join(prefix, 'conda-meta', dist + '.json')
+            print("WARNING: unlinking: %s" % meta_path)
+            try:
+                os.rename(meta_path, meta_path + '.bak')
+            except OSError:
+                rm_rf(meta_path)
 
 
 def prefix_env(env_name):
@@ -500,7 +549,7 @@ def main():
 
 
 def main2():
-    global SKIP_SCRIPTS
+    global SKIP_SCRIPTS, ROOT_PREFIX, PKGS_DIR
 
     p = OptionParser(description="conda post extract tool used by installers")
 
@@ -516,7 +565,20 @@ def main2():
                  action="store_true",
                  help="multi post extract usecase")
 
+    p.add_option('--link-dist',
+                 action="store",
+                 default=None,
+                 help="link dist")
+
+    p.add_option('--root-prefix',
+                 action="store",
+                 default=abspath(join(__file__, '..', '..')),
+                 help="root prefix (defaults to %default)")
+
     opts, args = p.parse_args()
+    ROOT_PREFIX = opts.root_prefix.replace('//', '/')
+    PKGS_DIR = join(ROOT_PREFIX, 'pkgs')
+
     if args:
         p.error('no arguments expected')
 
@@ -529,6 +591,10 @@ def main2():
 
     if opts.multi:
         multi_post_extract()
+        return
+
+    if opts.link_dist:
+        link_dist(opts.link_dist)
         return
 
     post_extract()

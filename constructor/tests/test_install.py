@@ -1,7 +1,7 @@
 import unittest
 
 
-from constructor.install import (
+from ..install import (
     PaddingError, binary_replace, name_dist, url_pat,
     link_idists, duplicates_to_remove,
 )
@@ -128,9 +128,6 @@ class Misc_TestCase(unittest.TestCase):
         self.assertEqual(name_dist('pip-7.1-py27_0'), 'pip')
         self.assertEqual(name_dist('conda-build-1.21.6-py35_0'),
                          'conda-build')
-
-    def test_link_idists(self):
-        self.assertRaises(NotImplementedError, link_idists)
 
 
 def run():

@@ -1,23 +1,21 @@
-# (c) 2016 Continuum Analytics, Inc. / http://continuum.io
+# (c) 2016 Anaconda, Inc. / https://anaconda.com
 # All Rights Reserved
 #
 # constructor is distributed under the terms of the BSD 3-clause license.
 # Consult LICENSE.txt or http://opensource.org/licenses/BSD-3-Clause.
 
-from __future__ import print_function, division, absolute_import
+from __future__ import absolute_import, division, print_function
 
 import os
+from os.path import basename, dirname, getsize, isdir, join
 import shutil
 import tarfile
 import tempfile
-from os.path import dirname, getsize, join
 
-from constructor.install import name_dist
-from constructor.construct import ns_platform
-from constructor.utils import (preprocess, read_ascii_only, fill_template,
-                               md5_file)
-import constructor.preconda as preconda
-
+from .construct import ns_platform
+from .install import name_dist
+from .preconda import files as preconda_files, write_files as preconda_write_files
+from .utils import add_condarc, filename_dist, fill_template, md5_file, preprocess, read_ascii_only
 
 THIS_DIR = dirname(__file__)
 
@@ -29,26 +27,16 @@ def read_header_template():
         return fi.read()
 
 
-def add_condarc(info):
-    channels = info.get('conda_default_channels')
-    if channels:
-        yield '# ----- add condarc'
-        yield 'cat <<EOF >$PREFIX/.condarc'
-        yield 'default_channels:'
-        for url in channels:
-            yield '  - %s' % url
-        yield 'EOF'
-
-
 def get_header(tarball, info):
     name = info['name']
-    dists = [fn[:-8] for fn in info['_dists']]
+    dists = [filename_dist(dist)[:-8] for dist in info['_dists']]
     dist0 = dists[0]
     assert name_dist(dist0) == 'python'
 
     has_license = bool('license_file' in info)
     ppd = ns_platform(info['_platform'])
     ppd['keep_pkgs'] = bool(info.get('keep_pkgs'))
+    ppd['attempt_hardlinks'] = bool(info.get('attempt_hardlinks'))
     ppd['has_license'] = has_license
     for key in 'pre_install', 'post_install':
         ppd['has_%s' % key] = bool(key in info)
@@ -87,20 +75,34 @@ def get_header(tarball, info):
     return data
 
 
-def create(info):
+def create(info, verbose=False):
     tmp_dir = tempfile.mkdtemp()
-    preconda.write_files(info, tmp_dir)
-    tarball = join(tmp_dir, 'tmp.tar')
-    t = tarfile.open(tarball, 'w')
-    if 'license_file' in info:
-        t.add(info['license_file'], 'LICENSE.txt')
-    for fn in preconda.files:
-        t.add(join(tmp_dir, fn), 'pkgs/' + fn)
-    for fn in info['_dists']:
-        t.add(join(info['_download_dir'], fn), 'pkgs/' + fn)
+    preconda_write_files(info, tmp_dir)
+
+    preconda_tarball = join(tmp_dir, 'preconda.tar.bz2')
+    p_t = tarfile.open(preconda_tarball, 'w:bz2')
+    for dist in preconda_files:
+        fn = filename_dist(dist)
+        p_t.add(join(tmp_dir, fn), 'pkgs/' + fn)
     for key in 'pre_install', 'post_install':
         if key in info:
-            t.add(info[key], 'pkgs/%s.sh' % key)
+            p_t.add(info[key], 'pkgs/%s.sh' % key)
+    cache_dir = join(tmp_dir, 'cache')
+    if isdir(cache_dir):
+        for cf in os.listdir(cache_dir):
+            if cf.endswith(".json"):
+                p_t.add(join(cache_dir, cf), 'pkgs/cache/' + cf)
+    p_t.add(join(tmp_dir, 'conda-meta', 'history'), 'conda-meta/history')
+    p_t.close()
+
+    tarball = join(tmp_dir, 'tmp.tar')
+    t = tarfile.open(tarball, 'w')
+    t.add(preconda_tarball, basename(preconda_tarball))
+    if 'license_file' in info:
+        t.add(info['license_file'], 'LICENSE.txt')
+    for dist in info['_dists']:
+        fn = filename_dist(dist)
+        t.add(join(info['_download_dir'], fn), 'pkgs/' + fn)
     t.close()
 
     header = get_header(tarball, info)

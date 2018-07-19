@@ -1,21 +1,19 @@
-# (c) 2016 Continuum Analytics, Inc. / http://continuum.io
+# (c) 2016 Anaconda, Inc. / https://anaconda.com
 # All Rights Reserved
 #
 # constructor is distributed under the terms of the BSD 3-clause license.
 # Consult LICENSE.txt or http://opensource.org/licenses/BSD-3-Clause.
 
-from __future__ import print_function, division, absolute_import
+from __future__ import absolute_import, division, print_function
 
 import os
-import sys
 from os.path import abspath, basename, expanduser, isdir, join
+import sys
 
-from libconda.config import subdir as cc_platform
-
-from constructor.install import yield_lines
-import constructor.fcp as fcp
-import constructor.construct as construct
-
+from .conda_interface import cc_platform
+from .construct import parse as construct_parse, verify as construct_verify
+from .fcp import main as fcp_main
+from .install import yield_lines
 
 DEFAULT_CACHE_DIR = os.getenv('CONSTRUCTOR_CACHE', '~/.conda/constructor')
 
@@ -57,7 +55,8 @@ def get_output_filename(info):
 
 
 def main_build(dir_path, output_dir='.', platform=cc_platform,
-               verbose=True, cache_dir=DEFAULT_CACHE_DIR):
+               verbose=True, cache_dir=DEFAULT_CACHE_DIR,
+               dry_run=False):
     print('platform: %s' % platform)
     cache_dir = abspath(expanduser(cache_dir))
     try:
@@ -66,8 +65,8 @@ def main_build(dir_path, output_dir='.', platform=cc_platform,
         sys.exit("Error: invalid platform string '%s'" % platform)
 
     construct_path = join(dir_path, 'construct.yaml')
-    info = construct.parse(construct_path, platform)
-    construct.verify(info)
+    info = construct_parse(construct_path, platform)
+    construct_verify(info)
     info['_platform'] = platform
     info['_download_dir'] = join(cache_dir, platform)
     set_installer_type(info)
@@ -75,15 +74,15 @@ def main_build(dir_path, output_dir='.', platform=cc_platform,
     if info['installer_type'] == 'sh':
         if sys.platform == 'win32':
             sys.exit("Error: Cannot create .sh installer on Windows.")
-        from constructor.shar import create
+        from .shar import create
     elif info['installer_type'] == 'pkg':
         if sys.platform != 'darwin':
             sys.exit("Error: Can only create .pkg installer on OSX.")
-        from constructor.osxpkg import create
+        from .osxpkg import create
     elif info['installer_type'] == 'exe':
         if sys.platform != 'win32':
             sys.exit("Error: Can only create .pkg installer on Windows.")
-        from constructor.winexe import create
+        from .winexe import create
 
     if verbose:
         print('conda packages download: %s' % info['_download_dir'])
@@ -111,9 +110,21 @@ def main_build(dir_path, output_dir='.', platform=cc_platform,
             if any((not s) for s in info[key]):
                 sys.exit("Error: found empty element in '%s:'" % key)
 
-    fcp.main(info, verbose=verbose)
+    fcp_main(info, verbose=verbose, dry_run=dry_run)
+    if dry_run:
+        print("Dry run, no installer created.")
+        return
 
     info['_outpath'] = join(output_dir, get_output_filename(info))
+
+    # info has keys
+    # 'name', 'version', 'channels', 'exclude',
+    # '_platform', '_download_dir', '_outpath'
+    # 'specs': ['python 3.5*', 'conda', 'nomkl', 'numpy', 'scipy', 'pandas', 'notebook', 'matplotlib', 'lighttpd']
+    # 'license_file': '/Users/kfranz/continuum/constructor/examples/maxiconda/EULA.txt'
+    # '_dists': List[Dist]
+    # '_urls': List[Tuple[url, md5]]
+
     create(info, verbose=verbose)
     if 0:
         with open(join(output_dir, 'pkg-list.txt'), 'w') as fo:
@@ -162,6 +173,11 @@ def main():
                  help="perform some self tests and exit",
                  action="store_true")
 
+    p.add_option('--dry-run',
+                 help="solve package specs but do not create installer",
+                 default=False,
+                 action="store_true")
+
     p.add_option('-v', '--verbose',
                  action="store_true")
 
@@ -172,7 +188,7 @@ def main():
     opts, args = p.parse_args()
 
     if opts.version:
-        from constructor import __version__
+        from . import __version__
         print('constructor version:', __version__)
         return
 
@@ -185,8 +201,8 @@ def main():
         return
 
     if opts.test:
-        import constructor.tests
-        constructor.tests.main()
+        from .tests import main as tests_main
+        tests_main()
         return
 
     if opts.debug:
@@ -201,7 +217,8 @@ def main():
         p.error("no such directory: %s" % dir_path)
 
     main_build(dir_path, output_dir=opts.output_dir, platform=opts.platform,
-               verbose=opts.verbose, cache_dir=opts.cache_dir)
+               verbose=opts.verbose, cache_dir=opts.cache_dir,
+               dry_run=opts.dry_run)
 
 
 if __name__ == '__main__':

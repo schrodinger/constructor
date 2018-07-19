@@ -1,4 +1,4 @@
-# (c) 2016 Continuum Analytics, Inc. / http://continuum.io
+# (c) 2016 Anaconda, Inc. / https://anaconda.com
 # All Rights Reserved
 #
 # constructor is distributed under the terms of the BSD 3-clause license.
@@ -6,20 +6,19 @@
 """
 fcp (fetch conda packages) module
 """
-from __future__ import print_function, division, absolute_import
+from __future__ import absolute_import, division, print_function
 
-import re
-import os
-import sys
 from collections import defaultdict
-from os.path import isdir, isfile, join
+import os
+from os.path import isdir, isfile, join, getsize
+import re
+import sys
+import tarfile
 
-from libconda.fetch import fetch_index, fetch_pkg
-from libconda.resolve import Resolve, NoPackagesFound
-
-from constructor.utils import md5_file
-from constructor.install import name_dist
-
+from .conda_interface import (NoPackagesFound, Resolve, fetch_index, fetch_pkg,
+                              MatchSpec)
+from .install import name_dist
+from .utils import filename_dist, md5_file
 
 dists = []
 index = {}
@@ -32,7 +31,7 @@ def resolve(info, verbose=False):
         sys.exit("Error: index is empty, maybe 'channels' are missing?")
     specs = info['specs']
     r = Resolve(index)
-    if not any(s.split()[0] == 'python' for s in specs):
+    if not any(MatchSpec(s).name == 'python' for s in specs):
         specs.append('python')
     if verbose:
         print("specs: %r" % specs)
@@ -44,8 +43,8 @@ def resolve(info, verbose=False):
     sys.stdout.write('\n')
 
     if 'install_in_dependency_order' in info:
-        sort_info = {name_dist(d): d[:-8] for d in res}
-        dists.extend(d + '.tar.bz2' for d in r.graph_sort(sort_info))
+        sort_info = {name_dist(d): d for d in res}
+        dists.extend(d for d in r.dependency_sort(sort_info))
     else:
         dists.extend(res)
 
@@ -98,21 +97,6 @@ def parse_packages(lines):
         yield m.group('url'), fn, m.group('md5')
 
 
-def handle_packages(info):
-    for url, fn, md5 in parse_packages(info['packages']):
-        if fn.count('-') < 2:
-            sys.exit("Error: Not a valid conda package filename: '%s'" % fn)
-        dists.append(fn)
-        md5s[fn] = md5
-        if url:
-            urls[fn] = url
-        else:
-            try:
-                urls[fn] = index[fn]['channel']
-            except KeyError:
-                sys.exit("Error: did not find '%s' in any channels" % fn)
-
-
 def move_python_first():
     for dist in list(dists):
         if name_dist(dist) == 'python':
@@ -146,19 +130,29 @@ def fetch(info):
         os.makedirs(download_dir)
 
     info['_urls'] = []
-    for fn in dists:
+    for dist in dists:
+        fn = filename_dist(dist)
         path = join(download_dir, fn)
-        url = urls.get(fn)
-        md5 = md5s.get(fn)
+        url = urls.get(dist)
+        md5 = md5s.get(dist)
         if url:
             url_index = fetch_index((url,))
             try:
-                pkginfo = url_index[fn]
+                pkginfo = url_index[dist]
             except KeyError:
-                sys.exit("Error: no package '%s' in %s" % (fn, url))
+                sys.exit("Error: no package '%s' in %s" % (dist, url))
         else:
-            pkginfo = index[fn]
+            pkginfo = index[dist]
 
+        # convert pkginfo to flat dict
+        try:
+            pkginfo = pkginfo.dump()
+        except AttributeError:
+            # pkginfo was already a dict
+            pass
+
+        if not pkginfo['channel'].endswith('/'):
+            pkginfo['channel'] += '/'
         assert pkginfo['channel'].endswith('/')
         info['_urls'].append((pkginfo['channel'] + fn, pkginfo['md5']))
 
@@ -171,20 +165,85 @@ def fetch(info):
         print('fetching: %s' % fn)
         fetch_pkg(pkginfo, download_dir)
 
+# nsis and pkg installers automatically compute the tarballs size
+# so this might not really be needed for them
+def update_approx_tarballs_size(info, size):
+    if '_approx_tarballs_size' not in info:
+        # Keep a min, 50MB buffer size
+        info['_approx_tarballs_size'] = 52428800
+    info['_approx_tarballs_size'] += size
 
-def main(info, verbose=True):
+# for computing the size of the contents of all the tarballs in bytes
+def update_approx_pkgs_size(info, size):
+    if '_approx_pkgs_size' not in info:
+        # Keep a min, 50MB buffer size
+        info['_approx_pkgs_size'] = 52428800
+    info['_approx_pkgs_size'] += size
+
+def check_duplicates_files(info):
+    print('Checking for duplicate files ...')
+
+    map_members_scase = defaultdict(set)
+    map_members_icase = {}
+
+    for dist in info['_dists']:
+        fn = filename_dist(dist)
+        fn_path = join(info['_download_dir'], fn)
+        t = tarfile.open(fn_path)
+        update_approx_tarballs_size(info, os.path.getsize(fn_path))
+        for member in t.getmembers():
+            update_approx_pkgs_size(info, member.size)
+            if member.type == tarfile.DIRTYPE:
+                continue
+            mname = member.name
+            if not mname.split('/')[0] in ['info', 'recipe']:
+                map_members_scase[mname].add(fn)
+                key = mname.lower()
+                if key not in map_members_icase:
+                    map_members_icase[key] = {'files':set(), 'fns':set()}
+                map_members_icase[key]['files'].add(mname)
+                map_members_icase[key]['fns'].add(fn)
+        t.close()
+
+    for member in map_members_scase:
+        fns = map_members_scase[member]
+        msg_str = "File '%s' found in multiple packages: %s" % (
+                  member, ', '.join(fns))
+        if len(fns) > 1:
+            if info.get('ignore_duplicate_files'):
+                print('Warning: {}'.format(msg_str))
+            else:
+                sys.exit('Error: {}'.format(msg_str))
+
+    for member in map_members_icase:
+        # Some filesystems are not case sensitive by default (e.g HFS)
+        # Throw warning on linux and error out on macOS/windows
+        fns = map_members_icase[member]['fns']
+        files = list(map_members_icase[member]['files'])
+        msg_str = "Files %s found in the package(s): %s" % (
+                   str(files)[1:-1], ', '.join(fns))
+        if len(files) > 1:
+            if (info.get('ignore_duplicate_files') or
+                info['_platform'].startswith('linux')):
+                print('Warning: {}'.format(msg_str))
+            else:
+                sys.exit('Error: {}'.format(msg_str))
+
+
+def main(info, verbose=True, dry_run=False):
     if 'channels' in info:
         global index
-        index = fetch_index(
-                  tuple('%s/%s/' % (url.rstrip('/'), platform)
-                        for url in info['channels']
-                        for platform in (info['_platform'], 'noarch')))
+
+        _platforms = info['_platform'], 'noarch'
+        _urls = info['channels']
+        _urls = _urls + [x['src'] for x in info.get('channels_remap', [])]
+        subdir_urls = tuple('%s/%s/' % (url.rstrip('/'), subdir)
+                            for url in _urls for subdir in _platforms)
+        index = fetch_index(subdir_urls)
 
     if 'specs' in info:
         resolve(info, verbose)
     exclude_packages(info)
-    if 'packages' in info:
-        handle_packages(info)
 
     if not info.get('install_in_dependency_order'):
         dists.sort()
@@ -198,6 +257,10 @@ def main(info, verbose=True):
     if verbose:
         show(info)
     check_dists()
+    if dry_run:
+        return
     fetch(info)
 
     info['_dists'] = list(dists)
+
+    check_duplicates_files(info)

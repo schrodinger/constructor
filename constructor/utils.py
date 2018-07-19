@@ -1,4 +1,4 @@
-# (c) 2016 Continuum Analytics, Inc. / http://continuum.io
+# (c) 2016 Anaconda, Inc. / https://anaconda.com
 # All Rights Reserved
 #
 # constructor is distributed under the terms of the BSD 3-clause license.
@@ -7,6 +7,14 @@
 import re
 import sys
 import hashlib
+
+
+def filename_dist(dist):
+    """ Return the filename of a distribution. """
+    if hasattr(dist, 'to_filename'):
+        return dist.to_filename()
+    else:
+        return dist
 
 
 def fill_template(data, d):
@@ -68,3 +76,38 @@ def preprocess(data, namespace):
             return match.group(4) or ''
 
     return if_pat.sub(if_repl, data)
+
+
+def add_condarc(info):
+    if info.get('write_condarc'):
+        default_channels = info.get('conda_default_channels')
+        channels = info.get('channels')
+        if sys.platform == 'win32':
+            if default_channels or channels:
+                yield '# ----- add condarc'
+                yield 'Var /Global CONDARC'
+                yield 'FileOpen $CONDARC "$INSTDIR\.condarc" w'
+                if default_channels:
+                    yield 'FileWrite $CONDARC "default_channels:$\\r$\\n"'
+                    for url in default_channels:
+                        yield 'FileWrite $CONDARC "  - %s$\\r$\\n"' % url
+                if channels:
+                    yield 'FileWrite $CONDARC "channels:$\\r$\\n"'
+                    for url in channels:
+                        yield 'FileWrite $CONDARC "  - %s$\\r$\\n"' % url
+                yield 'FileClose $CONDARC'
+        else:
+            if default_channels or channels:
+                yield '# ----- add condarc'
+                yield 'cat <<EOF >$PREFIX/.condarc'
+                if default_channels:
+                    yield 'default_channels:'
+                    for url in default_channels:
+                        yield '  - %s' % url
+                if channels:
+                    yield 'channels:'
+                    for url in channels:
+                        yield '  - %s' % url
+                yield 'EOF'
+    else:
+        yield ''

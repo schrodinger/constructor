@@ -1,24 +1,25 @@
-# (c) 2016 Continuum Analytics, Inc. / http://continuum.io
+# (c) 2016 Anaconda, Inc. / https://anaconda.com
 # All Rights Reserved
 #
 # constructor is distributed under the terms of the BSD 3-clause license.
 # Consult LICENSE.txt or http://opensource.org/licenses/BSD-3-Clause.
 
-from __future__ import print_function, division, absolute_import
+from __future__ import absolute_import, division, print_function
 
 import os
-import sys
-import shutil
-import tempfile
 from os.path import abspath, dirname, isfile, join
+import shutil
 from subprocess import Popen, PIPE, check_call, check_output
+import sys
+import math
+import tempfile
+import warnings
 
-from constructor.construct import ns_platform
-from constructor.install import name_dist
-from constructor.utils import make_VIProductVersion, preprocess, fill_template
-from constructor.imaging import write_images
-import constructor.preconda as preconda
-
+from .construct import ns_platform
+from .imaging import write_images
+from .install import name_dist
+from .preconda import write_files as preconda_write_files
+from .utils import filename_dist, fill_template, make_VIProductVersion, preprocess, add_condarc
 
 THIS_DIR = dirname(__file__)
 NSIS_DIR = join(THIS_DIR, 'nsis')
@@ -39,44 +40,72 @@ def read_nsi_tmpl():
 
 
 def find_vs_runtimes(dists, py_version):
-    vs_map = {
-        '2.7': 'vs2008_runtime',
-        '3.4': 'vs2010_runtime',
-        '3.5': 'vs2015_runtime',
-        '3.6': 'vs2015_runtime',
-    }
-    vs_runtime = vs_map.get(py_version[:3])
-    return [dist for dist in dists
-            if name_dist(dist) in (vs_runtime, 'msvc_runtime')]
+    valid_runtimes = (
+        'vs2008_runtime',
+        'vs2010_runtime',
+        'vs2013_runtime',
+        'vs2015_runtime',
+        'msvc_runtime',
+    )
+    return [dist for dist in dists if name_dist(dist) in valid_runtimes]
 
 
-def pkg_commands(download_dir, dists, py_version, keep_pkgs):
+def pkg_commands(download_dir, dists, py_version, keep_pkgs, attempt_hardlinks):
     vs_dists = find_vs_runtimes(dists, py_version)
-    print("MSVC runtimes found: %s" % vs_dists)
+    print("MSVC runtimes found: %s" % ([filename_dist(d) for d in vs_dists]))
     if len(vs_dists) != 1:
-        sys.exit("Error: number of MSVC runtimes found: %d" % len(vs_dists))
+        warnings.warn("Number of MSVC runtimes found: %d" % len(vs_dists))
 
-    for n, fn in enumerate(vs_dists + dists):
+    # Extract MSVC runtimes and python to a temporary directory and delete it
+    # later. This way we do not rely on PATH env var; and python, required for
+    # invoking '.install.py', can pick up the required DLLs from it's vicinity.
+    # NSIS doesn't provide direct functionality to create a temporary directory,
+    # So we get the name of a temporary file, delete it and then create a
+    # temporary directory by the same name.
+    yield r'Var /Global ANACONDA_TMP_LOC'
+    yield r"""System::Call 'Kernel32::GetTempFileName(t "$INSTDIR", t "t", i 0, t.r0) i.r1'"""
+    yield r'StrCpy $ANACONDA_TMP_LOC $0'
+    yield r'Delete $ANACONDA_TMP_LOC'
+    yield r'CreateDirectory "$ANACONDA_TMP_LOC.dir"'
+
+    assert filename_dist(dists[0]).startswith('python-')
+
+    for n, dist in enumerate(vs_dists + dists[:1]):
+        fn = filename_dist(dist)
         yield ''
         yield '# --> %s <--' % fn
         yield 'File %s' % str_esc(join(download_dir, fn))
-        yield r'untgz::extract -d "$INSTDIR" -zbz2 "$INSTDIR\pkgs\%s"' % fn
-        if n == 0:
-            # only extract MSVC runtimes first, so that Python can be used
-            # by _nsis postpkg
-            assert 'runtime' in fn
-            continue
-        if n == 1:
-            assert fn.startswith('python-')
-        cmd = r'"$INSTDIR\pythonw.exe" -E -s "$INSTDIR\pkgs\.install.py"'
-        yield "ExecWait '%s'" % cmd
+        yield r'untgz::extract -d "$ANACONDA_TMP_LOC.dir" -zbz2 "$INSTDIR\pkgs\%s"' % fn
+
+    for n, dist in enumerate(vs_dists + dists):
+        fn = filename_dist(dist)
+        yield ''
+        yield '# --> %s <--' % fn
+        if n > len(vs_dists):
+            yield 'File %s' % str_esc(join(download_dir, fn))
+        if attempt_hardlinks:
+            yield r'untgz::extract -d "$INSTDIR\pkgs\%s" -zbz2 "$INSTDIR\pkgs\%s"' % (fn[:-8], fn)
+        else:
+            yield r'untgz::extract -d "$INSTDIR" -zbz2 "$INSTDIR\pkgs\%s"' % fn
+            cmd = r'"$ANACONDA_TMP_LOC.dir\pythonw.exe" -E -s "$INSTDIR\pkgs\.install.py" --post root'
+            yield "ExecWait '%s'" % cmd
         if keep_pkgs:
             continue
         yield r'Delete "$INSTDIR\pkgs\%s"' % fn
 
+    if attempt_hardlinks:
+        cmd = r'"$ANACONDA_TMP_LOC.dir\pythonw.exe" -E -s "$INSTDIR\pkgs\.install.py"'
+        yield "ExecWait '%s'" % cmd
+
     if not keep_pkgs:
         yield ''
         yield r'RMDir "$INSTDIR\pkgs"'
+
+    yield r'DetailPrint "Removing temporary files..."'
+    # Turn off detail printing for the delete instruction
+    yield r'SetDetailsPrint none'
+    yield r'RMDir /r /REBOOTOK "$ANACONDA_TMP_LOC.dir"'
+    yield r'SetDetailsPrint both'
 
 
 def make_nsi(info, dir_path):
@@ -84,7 +113,7 @@ def make_nsi(info, dir_path):
     name = info['name']
     download_dir = info['_download_dir']
     dists = info['_dists']
-    py_name, py_version, unused_build = dists[0].rsplit('-', 2)
+    py_name, py_version, unused_build = filename_dist(dists[0]).rsplit('-', 2)
     assert py_name == 'python'
     arch = int(info['_platform'].split('-')[1])
 
@@ -93,7 +122,7 @@ def make_nsi(info, dir_path):
         'NAME': name,
         'VERSION': info['version'],
         'VIPV': make_VIProductVersion(info['version']),
-        'COMPANY': info.get('company', 'Schrodinger, Inc.'),
+        'COMPANY': info.get('company', 'Unknown, Inc.'),
         'ARCH': '%d-bit' % arch,
         'PY_VER': py_version[:3],
         'PYVERSION': py_version,
@@ -112,7 +141,9 @@ def make_nsi(info, dir_path):
                     ('INSTALL_PY', '.install.py'),
                     ('URLS_FILE', 'urls'),
                     ('URLS_TXT_FILE', 'urls.txt'),
-                    ('POST_INSTALL', 'post_install.bat')]:
+                    ('POST_INSTALL', 'post_install.bat'),
+                    ('CONDA_HISTORY', join('conda-meta', 'history')),
+                    ('INDEX_CACHE', 'cache')]:
         replace[key] = join(dir_path, fn)
     for key in replace:
         replace[key] = str_esc(replace[key])
@@ -125,14 +156,22 @@ def make_nsi(info, dir_path):
     data = fill_template(data, replace)
 
     cmds = pkg_commands(download_dir, dists, py_version,
-                        bool(info.get('keep_pkgs')))
+                        bool(info.get('keep_pkgs')),
+                        bool(info.get('attempt_hardlinks')))
+
+    # division by 10^3 instead of 2^10 is deliberate here. gives us more room
+    approx_pkgs_size_kb = int(
+        math.ceil(info.get('_approx_pkgs_size', 0) / 1000))
+
     # these are unescaped (and unquoted)
     for key, value in [
         ('@NAME@', name),
         ('@NSIS_DIR@', NSIS_DIR),
         ('@BITS@', str(arch)),
         ('@PKG_COMMANDS@', '\n    '.join(cmds)),
+        ('@WRITE_CONDARC@', '\n    '.join(add_condarc(info))),
         ('@MENU_PKGS@', ' '.join(info.get('menu_packages', []))),
+        ('@SIZE@', str(approx_pkgs_size_kb)),
         ]:
         data = data.replace(key, value)
 
@@ -172,7 +211,7 @@ Error: no file %s
 def create(info, verbose=False):
     verify_nsis_install()
     tmp_dir = tempfile.mkdtemp()
-    preconda.write_files(info, tmp_dir)
+    preconda_write_files(info, tmp_dir)
     if 'pre_install' in info:
         sys.exit("Error: Cannot run pre install on Windows, sorry.\n")
 
@@ -194,11 +233,11 @@ def create(info, verbose=False):
     if verbose:
         sub = Popen(args, stdout=PIPE, stderr=PIPE)
         stdout, stderr = sub.communicate()
-        for msg, info in zip((stdout, stderr), ('stdout', 'stderr')):
+        for msg, information in zip((stdout, stderr), ('stdout', 'stderr')):
             # on Python3 we're getting bytes
             if hasattr(msg, 'decode'):
                 msg = msg.decode()
-            print('makensis {}:'.format(info))
+            print('makensis {}:'.format(information))
             print(msg)
     else:
         check_call(args)

@@ -1,5 +1,13 @@
-(conda) constructor
-===================
+# (conda) constructor
+
+
+## Build status
+
+[![Build Status](https://travis-ci.org/conda/constructor.svg?branch=master)](https://travis-ci.org/conda/constructor)
+[![Build status](https://ci.appveyor.com/api/projects/status/cxf565h1rh3v0kaq?svg=true)](https://ci.appveyor.com/project/ContinuumAnalyticsFOSS/constructor)
+[![codecov](https://codecov.io/gh/conda/constructor/branch/master/graph/badge.svg)](https://codecov.io/gh/conda/constructor)
+
+## Description:
 
 constructor is a tool which allows constructing an installer for
 a collection of conda packages.  Basically, it creates an Anaconda-like
@@ -7,11 +15,9 @@ installer consisting of conda packages.   This tool was previously
 proprietary and known as `cas-installer`.
 
 
-Installation:
--------------
+## Installation:
 
-As of version 1.3.0, `constructor` may be installed into any conda
-environment using:
+`constructor` can be installed into the base environment using:
 
     $ conda install constructor
 
@@ -20,8 +26,7 @@ Once installed, the constructor command will be available:
     $ constructor -h
 
 
-Usage:
-------
+## Usage:
 
 The `constructor` command takes an installer specification directory as its
 argument.  This directory needs to contain a file `construct.yaml`,
@@ -35,8 +40,7 @@ An example is located
 in <a href="./examples/maxiconda">examples/maxiconda</a>.
 
 
-Notes:
-------
+## Notes:
 
   * Constructor does not work with `noarch`-Python packages.
     All conda packages must be available for the platform you are
@@ -49,7 +53,18 @@ Notes:
     explicitly.
     In particular, on Windows this means that if you want the "Anaconda
     Prompt", you will have to list `console_shortcut`, as well as `menuinst`.
-  * For Windows builds, add the Continuum channels `/free` and `/msys2`
+  * For Windows builds, add the Anaconda channel `/msys2`
     to the file `constructor.yaml`. This provides packages such as
     `m2w64-toolchain` which is a dependency of `theano`. It is best to
-    add `/msys2` as `http://repo.continuum.io/pkgs/msys2`.
+    add `/msys2` as `http://repo.anaconda.com/pkgs/msys2`.
+
+
+## Devel
+
+To build or update ``README.md`` at the root of the repo you'll need jinja2 installed
+
+```
+conda install jinja2
+```
+
+and then run ``make doc``. Or invoke the script directly with ``python scripts/make_docs.py``.
