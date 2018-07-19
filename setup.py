@@ -80,7 +80,12 @@ if bdist_wheel:
 
 # read version from constructor/__init__.py
 data = open(join(SETUP_PY_DIR, "constructor", "__init__.py")).read()
-version = re.search(r"^__version__\s*=\s*(['\"])(\S*)\1", data, re.M).group(2)
+ns = {}
+try:
+    exec(data, ns, ns)
+except Exception as e:
+    pass
+version = ns['__version__']
 
 setup(
     name="constructor",
