@@ -123,6 +123,10 @@ def make_nsi(info, dir_path):
         'VERSION': info['version'],
         'VIPV': make_VIProductVersion(info['version']),
         'COMPANY': info.get('company', 'Unknown, Inc.'),
+        'UNINSTALL_NAME': info.get(
+            'uninstall_name',
+            'Python ${PYVERSION} (${NAME} ${VERSION} ${ARCH})'
+        ),
         'ARCH': '%d-bit' % arch,
         'PY_VER': py_version[:3],
         'PYVERSION': py_version,
